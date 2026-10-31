@@ -1,0 +1,14 @@
+project:
+  name: telecom-customer-churn
+  random_seed: 42
+
+data:
+  raw_path: data/raw/churn.csv
+  target_column: Churn
+
+training:
+  test_size: 0.2
+  model_path: models/churn_model.joblib
+
+logging:
+  level: INFO

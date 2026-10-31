@@ -3,20 +3,25 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 
-# Environments and secrets
+# Conda and local secrets
 .conda/
 .env
 .env.*
 !.env.example
 
-# Local data and generated artifacts
-data/
-artifacts/
-models/
-*.joblib
+# Local datasets and generated models
+data/raw/*
+data/interim/*
+data/processed/*
+models/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!models/.gitkeep
 
-# Editor and OS files
+# Editor and operating system
 .vscode/
 .DS_Store
 Thumbs.db
