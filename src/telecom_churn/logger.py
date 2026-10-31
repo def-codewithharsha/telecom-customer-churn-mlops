@@ -6,6 +6,7 @@ import logging
 def get_logger(name: str) -> logging.Logger:
     """Return a consistently configured logger."""
     logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
 
     if not logger.handlers:
         handler = logging.StreamHandler()
