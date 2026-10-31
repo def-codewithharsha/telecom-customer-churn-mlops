@@ -11,8 +11,10 @@ logger = get_logger(__name__)
 def main() -> None:
     config = load_config()
     dataframe = load_raw_data(config)
-    metrics = train_model(dataframe, config)
-    logger.info("Holdout ROC AUC: %.4f", metrics["roc_auc"])
+    results = train_model(dataframe, config)
+
+    logger.info("Selected model: %s", results["selected_model"])
+    logger.info("Holdout metrics: %s", results["holdout"])
 
 
 if __name__ == "__main__":
