@@ -11,6 +11,6 @@ Early setup: repository structure and Python environment.
 Activate the Conda environment, then install the project and development tools:
 
 ```powershell
-conda activate churn-mlops
+conda activate churn_mlops
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
