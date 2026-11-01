@@ -22,6 +22,31 @@ def split_features_target(
 
     features = dataframe.drop(columns=[target_column]).copy()
 
+    numeric_columns = (
+        "SeniorCitizen",
+        "tenure",
+        "MonthlyCharges",
+        "TotalCharges",
+    )
+
+    for column in numeric_columns:
+        if column not in features.columns:
+            continue
+
+        cleaned = features[column].astype("string").str.strip()
+        cleaned = cleaned.replace("", pd.NA)
+        converted = pd.to_numeric(cleaned, errors="coerce")
+
+        invalid = cleaned.notna() & converted.isna()
+        if invalid.any():
+            examples = cleaned[invalid].drop_duplicates().head(5).tolist()
+            raise TelecomChurnError(
+                f"Column {column!r} has nonnumeric values: {examples}"
+            )
+
+        # Whitespace-only values become NaN; the numeric pipeline imputes them.
+        features[column] = converted.astype("float64")
+
     # Identifiers are not predictive features and should not be used by the model.
     identifier_columns = [
         column
