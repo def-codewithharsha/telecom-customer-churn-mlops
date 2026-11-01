@@ -3,9 +3,8 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from telecom_churn.config import load_config
 from telecom_churn.predict import ModelService

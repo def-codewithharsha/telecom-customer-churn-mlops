@@ -1,10 +1,14 @@
 """Compare candidate churn classifiers and save the selected model."""
-
+import os
 from pathlib import Path
 from typing import Any
 
 import joblib
+import mlflow
+import mlflow.data
+import mlflow.sklearn
 import pandas as pd
+from mlflow.models import infer_signature
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -22,13 +26,6 @@ from sklearn.pipeline import Pipeline
 from telecom_churn.config import AppConfig
 from telecom_churn.features import build_preprocessor, split_features_target
 from telecom_churn.logger import get_logger
-
-import os
-
-import mlflow
-import mlflow.data
-import mlflow.sklearn
-from mlflow.models import infer_signature
 
 logger = get_logger(__name__)
 
