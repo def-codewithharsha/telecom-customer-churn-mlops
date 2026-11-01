@@ -7,6 +7,7 @@ import pandas as pd
 from telecom_churn.config import AppConfig
 from telecom_churn.exception import TelecomChurnError
 from telecom_churn.logger import get_logger
+from telecom_churn.schema import CustomerFeatures
 
 logger = get_logger(__name__)
 
@@ -44,6 +45,25 @@ def validate_raw_data(dataframe: pd.DataFrame, target_column: str) -> None:
         raise TelecomChurnError(
             f"Target column {target_column!r} is missing. "
             f"Available columns: {dataframe.columns.tolist()}"
+        )
+    expected_features = set(CustomerFeatures.model_fields)
+    actual_features = set(dataframe.columns) - {target_column}
+
+    # IDs may be present in source data but are removed before training.
+    identifier_columns = {
+        column
+        for column in actual_features
+        if column.strip().lower() in {"customerid", "customer_id", "id"}
+    }
+    actual_features -= identifier_columns
+
+    missing = sorted(expected_features - actual_features)
+    unexpected = sorted(actual_features - expected_features)
+
+    if missing or unexpected:
+        raise TelecomChurnError(
+            "Training columns do not match the prediction API schema. "
+            f"Missing: {missing}; unexpected: {unexpected}"
         )
 
     if dataframe[target_column].isna().any():

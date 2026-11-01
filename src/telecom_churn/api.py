@@ -2,21 +2,20 @@
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from telecom_churn.config import load_config
 from telecom_churn.predict import ModelService
+from telecom_churn.schema import CustomerFeatures
 
 
 class PredictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    features: dict[str, Any] = Field(
-        description="Feature names and values from the churn dataset"
-    )
+    features: CustomerFeatures
 
 
 class PredictResponse(BaseModel):
@@ -62,7 +61,7 @@ def predict(request: PredictRequest) -> PredictResponse:
     service: ModelService = app.state.model_service
 
     try:
-        result = service.predict(request.features)
+        result = service.predict(request.features.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
