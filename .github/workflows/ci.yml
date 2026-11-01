@@ -39,3 +39,11 @@ jobs:
 
       - name: Check Python syntax
         run: python -m compileall -q src
+
+      - name: Create synthetic CI dataset
+        run: python scripts/create_ci_dataset.py
+
+      - name: Run training smoke check
+        run: |
+          python -m telecom_churn.train
+          python -c "from pathlib import Path; p=Path('models/churn_model.joblib'); assert p.is_file() and p.stat().st_size > 0, 'Model bundle was not created'"
