@@ -23,6 +23,13 @@ from telecom_churn.config import AppConfig
 from telecom_churn.features import build_preprocessor, split_features_target
 from telecom_churn.logger import get_logger
 
+import os
+
+import mlflow
+import mlflow.data
+import mlflow.sklearn
+from mlflow.models import infer_signature
+
 logger = get_logger(__name__)
 
 SELECTION_METRIC = "average_precision"
@@ -145,6 +152,18 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
         "holdout": holdout_metrics,
     }
 
+    run_id = _log_mlflow_run(
+        dataframe=dataframe,
+        train_features=x_train,
+        selected_model=selected_model,
+        candidates=candidates,
+        results=results,
+        config=config,
+    )
+
+    results["mlflow_run_id"] = run_id
+    logger.info("MLflow tracking run: %s", run_id)
+
     _save_model_bundle(selected_model, config, results, selected_name)
     logger.info("Selected model: %s", selected_name)
     logger.info(
@@ -181,3 +200,90 @@ def _save_model_bundle(
 
     logger.info("Saved selected model bundle to %s", model_path)
     return model_path
+
+def _log_mlflow_run(
+    dataframe: pd.DataFrame,
+    train_features: pd.DataFrame,
+    selected_model: Pipeline,
+    candidates: dict[str, Pipeline],
+    results: dict[str, Any],
+    config: AppConfig,
+) -> str:
+    """Record candidate comparisons, dataset metadata, and selected model in MLflow."""
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment(config.project_name)
+
+    dataset = mlflow.data.from_pandas(
+        dataframe,
+        source=str(config.data.raw_path),
+        name=config.project_name,
+        targets=config.data.target_column,
+    )
+
+    with mlflow.start_run(run_name="churn-model-comparison") as parent_run:
+        mlflow.log_params(
+            {
+                "selection_metric": results["selection_metric"],
+                "selected_model": results["selected_model"],
+                "random_seed": config.random_seed,
+                "test_size": config.training.test_size,
+                "cv_folds": 5,
+                "target_column": config.data.target_column,
+            }
+        )
+        mlflow.set_tag("project", config.project_name)
+        mlflow.log_input(dataset, context="training")
+
+        for name, metrics in results["cross_validation"].items():
+            candidate = candidates[name]
+            classifier_params = candidate.named_steps["classifier"].get_params(
+                deep=False
+            )
+
+            with mlflow.start_run(run_name=name, nested=True):
+                mlflow.log_param("algorithm", name)
+                mlflow.log_params(
+                    {
+                        f"classifier_{key}": str(value)
+                        for key, value in classifier_params.items()
+                    }
+                )
+                mlflow.log_metrics(
+                    {f"cv_{key}": float(value) for key, value in metrics.items()}
+                )
+
+        holdout_metrics = {
+            f"holdout_{key}": float(value)
+            for key, value in results["holdout"].items()
+            if isinstance(value, (int, float))
+        }
+        mlflow.log_metrics(holdout_metrics)
+
+        mlflow.log_dict(
+            {
+                "confusion_matrix": results["holdout"]["confusion_matrix"],
+                "classification_report": results["holdout"]["classification_report"],
+            },
+            "evaluation/holdout_report.json",
+        )
+
+        model_example = train_features.head(3)
+        signature = infer_signature(
+            model_example,
+            selected_model.predict(model_example),
+        )
+        mlflow.sklearn.log_model(
+            selected_model,
+            name="selected_model",
+            signature=signature,
+            input_example=model_example,
+            skops_trusted_types=[
+                "numpy.dtype",
+                "sklearn.compose._column_transformer.make_column_selector",
+            ],
+        )
+
+        run_id = parent_run.info.run_id
+
+    return run_id

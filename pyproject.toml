@@ -23,4 +23,4 @@ target-version = "py311"
 select = ["E", "F", "I", "UP"]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "mlflow==3.16.1"]
