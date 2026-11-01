@@ -1,0 +1,10 @@
+.git
+.venv
+.conda
+__pycache__
+*.py[cod]
+.env
+.env.*
+data/
+notebooks/
+tests/

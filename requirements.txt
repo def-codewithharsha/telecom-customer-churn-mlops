@@ -1,8 +1,8 @@
-numpy
-pandas
-scikit-learn
-joblib
-PyYAML
-pydantic
-fastapi
-uvicorn[standard]
+numpy==2.4.6
+pandas==3.1.0
+scikit-learn==1.9.1
+joblib==1.6.0
+PyYAML==6.0.3
+pydantic==2.14.2
+fastapi==0.162.0
+uvicorn==0.54.0
