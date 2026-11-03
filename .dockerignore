@@ -8,3 +8,6 @@ __pycache__
 data/
 notebooks/
 tests/
+testexp.ipynb
+Todo.txt
+process.md

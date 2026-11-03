@@ -30,6 +30,7 @@ Thumbs.db
 #Expriments
 Todo.txt
 testexp.ipynb
+process.md
 
 # Local MLflow database and artifacts
 mlflow.db

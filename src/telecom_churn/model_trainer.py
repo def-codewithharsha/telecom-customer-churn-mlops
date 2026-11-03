@@ -9,6 +9,7 @@ import mlflow.data
 import mlflow.sklearn
 import pandas as pd
 from mlflow.models import infer_signature
+
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
