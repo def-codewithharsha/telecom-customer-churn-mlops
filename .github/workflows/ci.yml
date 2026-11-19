@@ -35,10 +35,13 @@ jobs:
           python -m pip install --no-deps -e .
 
       - name: Check code style
-        run: ruff check src
+        run: ruff check src scripts tests
 
       - name: Check Python syntax
-        run: python -m compileall -q src
+        run: python -m compileall -q src scripts tests
+
+      - name: Run automated tests
+        run: pytest -q
 
       - name: Create synthetic CI dataset
         run: python scripts/create_ci_dataset.py
