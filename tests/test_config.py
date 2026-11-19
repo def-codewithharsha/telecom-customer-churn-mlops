@@ -29,6 +29,11 @@ def _valid_config() -> dict[str, object]:
         "project": {"name": "churn-test", "random_seed": 17},
         "data": {"raw_path": "data/churn.csv", "target_column": "Churn"},
         "training": {"test_size": 0.25, "model_path": "models/model.skops"},
+        "quality_gates": {
+            "min_cv_average_precision": 0.6,
+            "min_holdout_average_precision": 0.55,
+            "min_improvement_over_baseline": 0.05,
+        },
         "logging": {"level": "debug"},
     }
 
@@ -43,6 +48,7 @@ def test_load_config_validates_values_and_resolves_relative_paths(
     assert result.project_name == "churn-test"
     assert result.random_seed == 17
     assert result.training.test_size == 0.25
+    assert result.quality_gates.min_cv_average_precision == 0.6
     assert result.log_level == "DEBUG"
     assert result.data.raw_path == config_root / "data" / "churn.csv"
     assert result.training.model_path == config_root / "models" / "model.skops"
@@ -109,4 +115,20 @@ def test_load_config_rejects_invalid_random_seed_and_log_level(
     _write_config(config_root, yaml.safe_dump(values))
 
     with pytest.raises(ConfigurationError, match="logging.level"):
+        config.load_config()
+
+
+@pytest.mark.parametrize(
+    "metric_value",
+    [-0.1, 1.1, True, float("nan"), "0.6"],
+)
+def test_load_config_rejects_invalid_quality_gate_metrics(
+    config_root: Path,
+    metric_value: object,
+) -> None:
+    values = _valid_config()
+    values["quality_gates"]["min_cv_average_precision"] = metric_value  # type: ignore[index]
+    _write_config(config_root, yaml.safe_dump(values))
+
+    with pytest.raises(ConfigurationError, match="quality_gates.min_cv_average_precision"):
         config.load_config()

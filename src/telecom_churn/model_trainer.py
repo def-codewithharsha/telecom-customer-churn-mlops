@@ -8,6 +8,7 @@ import mlflow.data
 import mlflow.sklearn
 import pandas as pd
 from mlflow.models import infer_signature
+from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -23,6 +24,7 @@ from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_
 from sklearn.pipeline import Pipeline
 
 from telecom_churn.config import AppConfig
+from telecom_churn.exception import ModelQualityGateError
 from telecom_churn.features import build_preprocessor, split_features_target
 from telecom_churn.logger import get_logger
 from telecom_churn.model_artifact import save_model_artifact
@@ -116,6 +118,23 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
             candidate_results[name]["roc_auc"],
         )
 
+    baseline_scores = cross_validate(
+        DummyClassifier(strategy="prior"),
+        x_train,
+        y_train,
+        cv=cv,
+        scoring={"average_precision": "average_precision"},
+        n_jobs=1,
+        error_score="raise",
+    )
+    baseline_average_precision = float(
+        baseline_scores["test_average_precision"].mean()
+    )
+    logger.info(
+        "CV prior baseline: PR-AUC=%.4f",
+        baseline_average_precision,
+    )
+
     selected_name = max(
         candidate_results,
         key=lambda name: candidate_results[name][SELECTION_METRIC],
@@ -146,8 +165,15 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
         "selection_metric": SELECTION_METRIC,
         "selected_model": selected_name,
         "cross_validation": candidate_results,
+        "baseline": {"average_precision": baseline_average_precision},
         "holdout": holdout_metrics,
     }
+    results["quality_gate"] = _evaluate_release_gate(
+        cv_average_precision=candidate_results[selected_name]["average_precision"],
+        baseline_average_precision=baseline_average_precision,
+        holdout_average_precision=holdout_metrics["average_precision"],
+        config=config,
+    )
 
     run_id = _log_mlflow_run(
         dataframe=dataframe,
@@ -161,6 +187,13 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
     results["mlflow_run_id"] = run_id
     logger.info("MLflow tracking run: %s", run_id)
 
+    if not results["quality_gate"]["passed"]:
+        failures = "; ".join(results["quality_gate"]["failures"])
+        logger.error("Model release gate failed; artifact was not saved: %s", failures)
+        raise ModelQualityGateError(f"Model release gate failed: {failures}")
+
+    logger.info("Model release gate passed: %s", results["quality_gate"]["checks"])
+
     _save_model_bundle(selected_model, config, results, selected_name)
     logger.info("Selected model: %s", selected_name)
     logger.info(
@@ -172,6 +205,42 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
     )
 
     return results
+
+
+def _evaluate_release_gate(
+    *,
+    cv_average_precision: float,
+    baseline_average_precision: float,
+    holdout_average_precision: float,
+    config: AppConfig,
+) -> dict[str, Any]:
+    """Compare the selected candidate with configured performance requirements."""
+    gate_config = config.quality_gates
+    improvement = cv_average_precision - baseline_average_precision
+    checks = {
+        "cv_average_precision": {
+            "actual": cv_average_precision,
+            "minimum": gate_config.min_cv_average_precision,
+            "passed": cv_average_precision >= gate_config.min_cv_average_precision,
+        },
+        "holdout_average_precision": {
+            "actual": holdout_average_precision,
+            "minimum": gate_config.min_holdout_average_precision,
+            "passed": holdout_average_precision
+            >= gate_config.min_holdout_average_precision,
+        },
+        "improvement_over_prior_baseline": {
+            "actual": improvement,
+            "minimum": gate_config.min_improvement_over_baseline,
+            "passed": improvement >= gate_config.min_improvement_over_baseline,
+        },
+    }
+    failures = [
+        f"{name}={check['actual']:.4f} is below minimum {check['minimum']:.4f}"
+        for name, check in checks.items()
+        if not check["passed"]
+    ]
+    return {"passed": not failures, "checks": checks, "failures": failures}
 
 
 def _save_model_bundle(
@@ -229,9 +298,22 @@ def _log_mlflow_run(
                 "test_size": config.training.test_size,
                 "cv_folds": 5,
                 "target_column": config.data.target_column,
+                "minimum_cv_average_precision": (
+                    config.quality_gates.min_cv_average_precision
+                ),
+                "minimum_holdout_average_precision": (
+                    config.quality_gates.min_holdout_average_precision
+                ),
+                "minimum_improvement_over_baseline": (
+                    config.quality_gates.min_improvement_over_baseline
+                ),
             }
         )
         mlflow.set_tag("project", config.project_name)
+        mlflow.set_tag(
+            "quality_gate_status",
+            "passed" if results["quality_gate"]["passed"] else "failed",
+        )
         mlflow.log_input(dataset, context="training")
 
         for name, metrics in results["cross_validation"].items():
@@ -258,6 +340,19 @@ def _log_mlflow_run(
             if isinstance(value, (int, float))
         }
         mlflow.log_metrics(holdout_metrics)
+        mlflow.log_metric(
+            "cv_prior_baseline_average_precision",
+            results["baseline"]["average_precision"],
+        )
+        mlflow.log_metrics(
+            {
+                "quality_gate_passed": float(results["quality_gate"]["passed"]),
+                "cv_average_precision_improvement_over_baseline": results[
+                    "quality_gate"
+                ]["checks"]["improvement_over_prior_baseline"]["actual"],
+            }
+        )
+        mlflow.log_dict(results["quality_gate"], "evaluation/quality_gate.json")
 
         mlflow.log_dict(
             {
@@ -267,21 +362,22 @@ def _log_mlflow_run(
             "evaluation/holdout_report.json",
         )
 
-        model_example = train_features.head(3)
-        signature = infer_signature(
-            model_example,
-            selected_model.predict(model_example),
-        )
-        mlflow.sklearn.log_model(
-            selected_model,
-            name="selected_model",
-            signature=signature,
-            input_example=model_example,
-            skops_trusted_types=[
-                "numpy.dtype",
-                "sklearn.compose._column_transformer.make_column_selector",
-            ],
-        )
+        if results["quality_gate"]["passed"]:
+            model_example = train_features.head(3)
+            signature = infer_signature(
+                model_example,
+                selected_model.predict(model_example),
+            )
+            mlflow.sklearn.log_model(
+                selected_model,
+                name="selected_model",
+                signature=signature,
+                input_example=model_example,
+                skops_trusted_types=[
+                    "numpy.dtype",
+                    "sklearn.compose._column_transformer.make_column_selector",
+                ],
+            )
 
         run_id = parent_run.info.run_id
 

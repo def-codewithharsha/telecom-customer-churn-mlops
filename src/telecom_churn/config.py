@@ -24,11 +24,19 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class QualityGateConfig:
+    min_cv_average_precision: float
+    min_holdout_average_precision: float
+    min_improvement_over_baseline: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     project_name: str
     random_seed: int
     data: DataConfig
     training: TrainingConfig
+    quality_gates: QualityGateConfig
     log_level: str
 
 
@@ -62,10 +70,15 @@ def load_config(config_path: str | Path = "configs/dev.yaml") -> AppConfig:
     if not isinstance(raw, Mapping):
         raise ConfigurationError("Configuration document must be a YAML mapping.")
 
-    _check_keys(raw, {"project", "data", "training", "logging"}, "root")
+    _check_keys(
+        raw,
+        {"project", "data", "training", "quality_gates", "logging"},
+        "root",
+    )
     project = _require_mapping(raw, "project")
     data = _require_mapping(raw, "data")
     training = _require_mapping(raw, "training")
+    quality_gates = _require_mapping(raw, "quality_gates")
     logging_config = raw.get("logging", {})
     if not isinstance(logging_config, Mapping):
         raise ConfigurationError("Configuration section 'logging' must be a mapping.")
@@ -73,6 +86,15 @@ def load_config(config_path: str | Path = "configs/dev.yaml") -> AppConfig:
     _check_keys(project, {"name", "random_seed"}, "project")
     _check_keys(data, {"raw_path", "target_column"}, "data")
     _check_keys(training, {"test_size", "model_path"}, "training")
+    _check_keys(
+        quality_gates,
+        {
+            "min_cv_average_precision",
+            "min_holdout_average_precision",
+            "min_improvement_over_baseline",
+        },
+        "quality_gates",
+    )
     _check_keys(logging_config, {"level"}, "logging")
 
     project_name = _require_nonempty_string(project, "name", "project")
@@ -92,6 +114,19 @@ def load_config(config_path: str | Path = "configs/dev.yaml") -> AppConfig:
     ):
         raise ConfigurationError("training.test_size must be a finite number between 0 and 1.")
 
+    min_cv_average_precision = _require_metric(
+        quality_gates,
+        "min_cv_average_precision",
+    )
+    min_holdout_average_precision = _require_metric(
+        quality_gates,
+        "min_holdout_average_precision",
+    )
+    min_improvement_over_baseline = _require_metric(
+        quality_gates,
+        "min_improvement_over_baseline",
+    )
+
     log_level = logging_config.get("level", "INFO")
     if not isinstance(log_level, str) or log_level.upper() not in {
         "CRITICAL",
@@ -110,6 +145,11 @@ def load_config(config_path: str | Path = "configs/dev.yaml") -> AppConfig:
         random_seed=random_seed,
         data=DataConfig(raw_path=raw_path, target_column=target_column),
         training=TrainingConfig(test_size=float(test_size), model_path=model_path),
+        quality_gates=QualityGateConfig(
+            min_cv_average_precision=min_cv_average_precision,
+            min_holdout_average_precision=min_holdout_average_precision,
+            min_improvement_over_baseline=min_improvement_over_baseline,
+        ),
         log_level=log_level.upper(),
     )
 
@@ -153,6 +193,21 @@ def _require_integer(section: Mapping[str, Any], key: str, section_name: str) ->
     if value < 0:
         raise ConfigurationError(f"Configuration value {section_name}.{key} must be non-negative.")
     return value
+
+
+def _require_metric(section: Mapping[str, Any], key: str) -> float:
+    """Read a required finite probability or metric floor in the range [0, 1]."""
+    value = section.get(key)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not 0.0 <= value <= 1.0
+    ):
+        raise ConfigurationError(
+            f"Configuration value quality_gates.{key} must be a finite number from 0 to 1."
+        )
+    return float(value)
 
 
 def _resolve_path(root: Path, value: str) -> Path:

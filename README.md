@@ -45,7 +45,7 @@ Run training from the project root:
 python -m telecom_churn.train
 ```
 
-Training splits the data into stratified train and holdout sets, compares logistic regression, random forest, and extra trees using five-fold stratified cross-validation, chooses the model with the highest mean average precision, evaluates it on the holdout set, logs the run to MLflow, and saves a safe sklearn model to `models/churn_model.skops` with JSON metadata at `models/churn_model.json`. The metadata includes SHA-256 digests for corruption detection. For deployment, set `MODEL_ARTIFACT_SHA256` to the independently recorded artifact digest so the API also checks the expected artifact identity.
+Training splits the data into stratified train and holdout sets, compares logistic regression, random forest, and extra trees using five-fold stratified cross-validation, and selects by mean average precision. Before saving a deployable model artifact, it checks configured minimum CV and holdout PR-AUC and requires a minimum CV PR-AUC improvement over a `DummyClassifier` prior baseline. The initial floors in `configs/dev.yaml` are project learning policies based on observed full-dataset metrics; they are not business-approved production criteria. Failed candidates are recorded in MLflow without logging a model artifact, and training exits with an error. Passing candidates are saved as a safe sklearn model at `models/churn_model.skops` with JSON metadata at `models/churn_model.json`. The metadata includes SHA-256 digests for corruption detection. For deployment, set `MODEL_ARTIFACT_SHA256` to the independently recorded artifact digest so the API also checks the expected artifact identity.
 
 By default, MLflow uses a local SQLite database (`mlflow.db`) and local artifact storage. To use a tracking server, set `MLFLOW_TRACKING_URI` before training. For example:
 
@@ -145,7 +145,7 @@ These are next steps for a production service; the right choices depend on its a
 
 ## Configuration
 
-The local configuration is `configs/dev.yaml`. It sets the project name, random seed, raw CSV path, target column, holdout size, model output path, and log level. Paths are resolved relative to the repository root. Do not put credentials or secrets in YAML files.
+The local configuration is `configs/dev.yaml`. It sets the project name, random seed, raw CSV path, target column, holdout size, model output path, quality-gate floors, and log level. Paths are resolved relative to the repository root. Review the quality-gate thresholds against a frozen, representative evaluation set and business costs before production use. Do not put credentials or secrets in YAML files.
 
 ## License
 

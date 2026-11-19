@@ -15,3 +15,7 @@ class DataValidationError(TelecomChurnError):
 
 class PredictionInputError(TelecomChurnError):
     """Raised when prediction input cannot be accepted by the model service."""
+
+
+class ModelQualityGateError(TelecomChurnError):
+    """Raised when a trained candidate fails its configured release criteria."""
