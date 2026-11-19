@@ -66,3 +66,35 @@ def test_split_features_target_rejects_unknown_label(churn_dataframe: pd.DataFra
 
     with pytest.raises(TelecomChurnError, match="Unexpected churn labels"):
         split_features_target(malformed, Config())
+
+def test_split_features_target_rejects_values_outside_api_schema(
+    churn_dataframe: pd.DataFrame,
+) -> None:
+    malformed = churn_dataframe.copy()
+    malformed.loc[3, "Contract"] = "weekly"
+
+    class Config:
+        class Data:
+            target_column = "Churn"
+
+        data = Data()
+
+    with pytest.raises(TelecomChurnError, match="Contract at CSV row 5"):
+        split_features_target(malformed, Config())
+
+
+def test_split_features_target_allows_missing_imputable_values(
+    churn_dataframe: pd.DataFrame,
+) -> None:
+    malformed = churn_dataframe.copy()
+    malformed.loc[0, "Partner"] = None
+
+    class Config:
+        class Data:
+            target_column = "Churn"
+
+        data = Data()
+
+    features, _ = split_features_target(malformed, Config())
+
+    assert pd.isna(features.loc[0, "Partner"])

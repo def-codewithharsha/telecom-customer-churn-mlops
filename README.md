@@ -45,7 +45,7 @@ Run training from the project root:
 python -m telecom_churn.train
 ```
 
-Training splits the data into stratified train and holdout sets, compares logistic regression, random forest, and extra trees using five-fold stratified cross-validation, chooses the model with the highest mean average precision, evaluates it on the holdout set, logs the run to MLflow, and saves a model bundle to `models/churn_model.joblib`.
+Training splits the data into stratified train and holdout sets, compares logistic regression, random forest, and extra trees using five-fold stratified cross-validation, chooses the model with the highest mean average precision, evaluates it on the holdout set, logs the run to MLflow, and saves a safe sklearn model to `models/churn_model.skops` with JSON metadata at `models/churn_model.json`. The metadata includes SHA-256 digests for corruption detection. For deployment, set `MODEL_ARTIFACT_SHA256` to the independently recorded artifact digest so the API also checks the expected artifact identity.
 
 By default, MLflow uses a local SQLite database (`mlflow.db`) and local artifact storage. To use a tracking server, set `MLFLOW_TRACKING_URI` before training. For example:
 
@@ -105,18 +105,19 @@ The request schema rejects unknown fields and validates categorical values and n
 
 ## Docker
 
-The Dockerfile packages the API and a trained model bundle. Since model artifacts are not committed, train first so `models/churn_model.joblib` exists, then build and run:
+The Dockerfile packages the API and a trained model artifact, runs the service as UID 10001, and defines a container health check. Since model artifacts are not committed, train first so `models/churn_model.skops` and `models/churn_model.json` exist, then build and run:
 
 ```powershell
 docker build -t telecom-churn-api:local .
-docker run --rm -p 8080:8080 telecom-churn-api:local
+$modelMetadata = Get-Content models/churn_model.json | ConvertFrom-Json
+docker run --rm -p 8080:8080 -e "MODEL_ARTIFACT_SHA256=$($modelMetadata.artifact_sha256)" telecom-churn-api:local
 ```
 
-Check `http://localhost:8080/health` or open `http://localhost:8080/docs`. This is a local demonstration flow; production deployments should retrieve a versioned, approved model artifact from durable storage or a model registry rather than relying on a workstation-generated file in the build context.
+Check `http://localhost:8080/health` or open `http://localhost:8080/docs`. The digest is included in the metadata and training logs. In production, inject `MODEL_ARTIFACT_SHA256` from a trusted release record or deployment configuration; do not calculate the expected value from the same artifact at container startup. This local example is for development only.
 
 ## CI
 
-The current GitHub Actions workflow runs on pull requests and pushes to `main`. It installs dependencies, runs Ruff on `src`, compiles the Python source, creates a synthetic CI dataset, and runs a training smoke check that verifies a model bundle is created. It does not currently run a comprehensive unit/integration/API test suite or deploy the service.
+The current GitHub Actions workflow runs on pull requests and pushes to `main`. It installs dependencies, runs Ruff and syntax checks, executes unit and API route tests, creates a synthetic CI dataset, runs a training smoke check, then builds and starts a container to check its user and health endpoints. The smoke image is not published or deployed. Broader integration and production deployment tests are still pending.
 
 ## Current scope and production gaps
 

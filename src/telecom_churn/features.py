@@ -1,6 +1,7 @@
 """Prepare churn features and build model preprocessing."""
 
 import pandas as pd
+from pydantic import TypeAdapter, ValidationError
 from sklearn.compose import ColumnTransformer, make_column_selector
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -8,6 +9,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from telecom_churn.config import AppConfig
 from telecom_churn.exception import TelecomChurnError
+from telecom_churn.schema import CustomerFeatures
 
 
 def split_features_target(
@@ -54,6 +56,18 @@ def split_features_target(
         if column.strip().lower() in {"customerid", "customer_id", "id"}
     ]
     features = features.drop(columns=identifier_columns)
+
+    expected_columns = set(CustomerFeatures.model_fields)
+    actual_columns = set(features.columns)
+    missing = sorted(expected_columns - actual_columns)
+    unexpected = sorted(actual_columns - expected_columns)
+    if missing or unexpected:
+        raise TelecomChurnError(
+            "Training columns do not match the prediction API schema. "
+            f"Missing: {missing}; unexpected: {unexpected}"
+        )
+
+    _validate_feature_values(features)
 
     target_values = dataframe[target_column].astype(str).str.strip().str.lower()
     target = target_values.map({"yes": 1, "no": 0})
@@ -102,3 +116,34 @@ def build_preprocessor() -> ColumnTransformer:
         ],
         remainder="drop",
     )
+
+def _validate_feature_values(features: pd.DataFrame) -> None:
+    """Validate each present training value against the inference field rules."""
+    problems: list[str] = []
+
+    for column in features.columns:
+        adapter = TypeAdapter(CustomerFeatures.model_fields[column].rebuild_annotation())
+        for row_number, value in enumerate(features[column].array, start=2):
+            # Missing feature values remain valid for training because the
+            # preprocessing pipeline imputes them. TotalCharges is also nullable
+            # in the serving schema.
+            if pd.isna(value):
+                continue
+
+            try:
+                adapter.validate_python(value)
+            except ValidationError as exc:
+                error = exc.errors(include_input=False)[0]
+                problems.append(
+                    f"{column} at CSV row {row_number}: {error['msg']}"
+                )
+                if len(problems) >= 10:
+                    break
+        if len(problems) >= 10:
+            break
+
+    if problems:
+        raise TelecomChurnError(
+            "Training data contains values outside the prediction schema: "
+            + "; ".join(problems)
+        )

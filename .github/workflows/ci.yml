@@ -15,7 +15,7 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -49,4 +49,25 @@ jobs:
       - name: Run training smoke check
         run: |
           python -m telecom_churn.train
-          python -c "from pathlib import Path; p=Path('models/churn_model.joblib'); assert p.is_file() and p.stat().st_size > 0, 'Model bundle was not created'"
+          python -c "import json; from pathlib import Path; p=Path('models/churn_model.skops'); m=Path('models/churn_model.json'); d=json.loads(m.read_text()); assert p.is_file() and p.stat().st_size > 0 and len(d.get('artifact_sha256','')) == 64, 'Safe model artifact or digest metadata was not created'"
+      - name: Build container smoke image
+        run: docker build --pull -t telecom-churn-ci:${{ github.sha }} .
+
+      - name: Start container and check health endpoints
+        run: |
+          docker run --detach --name telecom-churn-ci --publish 127.0.0.1:8080:8080 telecom-churn-ci:${{ github.sha }}
+          test "$(docker inspect --format='{{.Config.User}}' telecom-churn-ci)" = "10001:10001"
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/ready >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs telecom-churn-ci
+            exit 1
+          fi
+          curl --fail --silent http://127.0.0.1:8080/health
+          curl --fail --silent http://127.0.0.1:8080/ready

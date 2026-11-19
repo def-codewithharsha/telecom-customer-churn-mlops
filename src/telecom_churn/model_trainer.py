@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import joblib
 import mlflow
 import mlflow.data
 import mlflow.sklearn
@@ -26,6 +25,7 @@ from sklearn.pipeline import Pipeline
 from telecom_churn.config import AppConfig
 from telecom_churn.features import build_preprocessor, split_features_target
 from telecom_churn.logger import get_logger
+from telecom_churn.model_artifact import save_model_artifact
 
 logger = get_logger(__name__)
 
@@ -180,22 +180,24 @@ def _save_model_bundle(
     results: dict[str, Any],
     model_name: str,
 ) -> Path:
-    """Persist the fitted pipeline and evaluation metadata."""
+    """Persist the fitted pipeline in skops with a JSON metadata sidecar."""
     model_path = config.training.model_path
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-
-    joblib.dump(
-        {
-            "model": model,
+    artifact_digest = save_model_artifact(
+        model=model,
+        model_path=model_path,
+        metadata={
             "model_name": model_name,
             "model_version": "0.2.0",
             "target_column": config.data.target_column,
+            "threshold": 0.5,
+            "mlflow_run_id": results.get("mlflow_run_id"),
             "results": results,
         },
-        model_path,
     )
 
-    logger.info("Saved selected model bundle to %s", model_path)
+    logger.info("Saved selected safe model artifact to %s", model_path)
+    logger.info("Model artifact SHA-256: %s", artifact_digest)
+    logger.info("Saved model metadata to %s", model_path.with_suffix('.json'))
     return model_path
 
 def _log_mlflow_run(

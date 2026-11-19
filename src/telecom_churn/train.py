@@ -2,7 +2,7 @@
 
 from telecom_churn.config import load_config
 from telecom_churn.data import load_raw_data
-from telecom_churn.logger import get_logger
+from telecom_churn.logger import configure_logging, get_logger
 from telecom_churn.model_trainer import train_model
 
 logger = get_logger(__name__)
@@ -10,6 +10,7 @@ logger = get_logger(__name__)
 
 def main() -> None:
     config = load_config()
+    configure_logging(config.log_level)
     dataframe = load_raw_data(config)
     results = train_model(dataframe, config)
 

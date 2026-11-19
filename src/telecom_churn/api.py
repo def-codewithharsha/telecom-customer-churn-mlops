@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from telecom_churn.config import load_config
+from telecom_churn.logger import configure_logging
 from telecom_churn.predict import ModelService
 from telecom_churn.schema import CustomerFeatures
 
@@ -28,8 +29,12 @@ class PredictResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
+    configure_logging(config.log_level)
     model_path: Path = config.training.model_path
-    app.state.model_service = ModelService(model_path)
+    app.state.model_service = ModelService(
+        model_path,
+        expected_features=CustomerFeatures.model_fields,
+    )
     yield
 
 
