@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from telecom_churn.config import AppConfig
-from telecom_churn.exception import TelecomChurnError
+from telecom_churn.exception import DataValidationError
 from telecom_churn.logger import get_logger
 from telecom_churn.schema import CustomerFeatures
 
@@ -17,14 +17,14 @@ def load_raw_data(config: AppConfig) -> pd.DataFrame:
     path: Path = config.data.raw_path
 
     if not path.exists():
-        raise TelecomChurnError(
+        raise DataValidationError(
             f"Dataset not found at {path}. Place the CSV there or update configs/dev.yaml."
         )
 
     try:
         dataframe = pd.read_csv(path)
     except (OSError, pd.errors.ParserError, UnicodeDecodeError) as exc:
-        raise TelecomChurnError(f"Could not read dataset at {path}: {exc}") from exc
+        raise DataValidationError(f"Could not read dataset at {path}: {exc}") from exc
 
     validate_raw_data(dataframe, config.data.target_column)
     logger.info("Loaded %d rows and %d columns from %s", *dataframe.shape, path)
@@ -35,14 +35,14 @@ def load_raw_data(config: AppConfig) -> pd.DataFrame:
 def validate_raw_data(dataframe: pd.DataFrame, target_column: str) -> None:
     """Reject empty, malformed, or unlabeled training data."""
     if dataframe.empty:
-        raise TelecomChurnError("Dataset is empty.")
+        raise DataValidationError("Dataset is empty.")
 
     if dataframe.columns.duplicated().any():
         duplicates = dataframe.columns[dataframe.columns.duplicated()].tolist()
-        raise TelecomChurnError(f"Dataset has duplicate column names: {duplicates}")
+        raise DataValidationError(f"Dataset has duplicate column names: {duplicates}")
 
     if target_column not in dataframe.columns:
-        raise TelecomChurnError(
+        raise DataValidationError(
             f"Target column {target_column!r} is missing. "
             f"Available columns: {dataframe.columns.tolist()}"
         )
@@ -61,16 +61,16 @@ def validate_raw_data(dataframe: pd.DataFrame, target_column: str) -> None:
     unexpected = sorted(actual_features - expected_features)
 
     if missing or unexpected:
-        raise TelecomChurnError(
+        raise DataValidationError(
             "Training columns do not match the prediction API schema. "
             f"Missing: {missing}; unexpected: {unexpected}"
         )
 
     if dataframe[target_column].isna().any():
         missing_count = int(dataframe[target_column].isna().sum())
-        raise TelecomChurnError(
+        raise DataValidationError(
             f"Target column {target_column!r} has {missing_count} missing values."
         )
 
     if dataframe.shape[1] < 2:
-        raise TelecomChurnError("Dataset must contain at least one feature and the target.")
+        raise DataValidationError("Dataset must contain at least one feature and the target.")

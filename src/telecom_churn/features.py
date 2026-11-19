@@ -8,7 +8,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from telecom_churn.config import AppConfig
-from telecom_churn.exception import TelecomChurnError
+from telecom_churn.exception import DataValidationError
 from telecom_churn.schema import CustomerFeatures
 
 
@@ -20,7 +20,7 @@ def split_features_target(
     target_column = config.data.target_column
 
     if target_column not in dataframe.columns:
-        raise TelecomChurnError(f"Target column {target_column!r} is missing.")
+        raise DataValidationError(f"Target column {target_column!r} is missing.")
 
     features = dataframe.drop(columns=[target_column]).copy()
 
@@ -42,7 +42,7 @@ def split_features_target(
         invalid = cleaned.notna() & converted.isna()
         if invalid.any():
             examples = cleaned[invalid].drop_duplicates().head(5).tolist()
-            raise TelecomChurnError(
+            raise DataValidationError(
                 f"Column {column!r} has nonnumeric values: {examples}"
             )
 
@@ -62,7 +62,7 @@ def split_features_target(
     missing = sorted(expected_columns - actual_columns)
     unexpected = sorted(actual_columns - expected_columns)
     if missing or unexpected:
-        raise TelecomChurnError(
+        raise DataValidationError(
             "Training columns do not match the prediction API schema. "
             f"Missing: {missing}; unexpected: {unexpected}"
         )
@@ -74,13 +74,13 @@ def split_features_target(
 
     if target.isna().any():
         unexpected = sorted(target_values[target.isna()].unique().tolist())
-        raise TelecomChurnError(f"Unexpected churn labels: {unexpected}")
+        raise DataValidationError(f"Unexpected churn labels: {unexpected}")
 
     if target.nunique() != 2:
-        raise TelecomChurnError("Expected exactly two churn target classes.")
+        raise DataValidationError("Expected exactly two churn target classes.")
 
     if features.shape[1] == 0:
-        raise TelecomChurnError("No feature columns remain after removing target and IDs.")
+        raise DataValidationError("No feature columns remain after removing target and IDs.")
 
     return features, target.astype("int64")
 
@@ -143,7 +143,7 @@ def _validate_feature_values(features: pd.DataFrame) -> None:
             break
 
     if problems:
-        raise TelecomChurnError(
+        raise DataValidationError(
             "Training data contains values outside the prediction schema: "
             + "; ".join(problems)
         )

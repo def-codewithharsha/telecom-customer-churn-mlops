@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from telecom_churn.config import load_config
+from telecom_churn.exception import PredictionInputError
 from telecom_churn.logger import configure_logging
 from telecom_churn.predict import ModelService
 from telecom_churn.schema import CustomerFeatures
@@ -66,7 +67,7 @@ def predict(request: PredictRequest) -> PredictResponse:
 
     try:
         result = service.predict(request.features.model_dump())
-    except ValueError as exc:
+    except PredictionInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return PredictResponse(**result)

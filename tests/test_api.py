@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from telecom_churn import api
+from telecom_churn.exception import PredictionInputError
 
 
 class StubModelService:
@@ -18,7 +19,9 @@ class StubModelService:
 
     def predict(self, features: dict[str, object]) -> dict[str, object]:
         if features.get("tenure") == 71:
-            raise ValueError("Invalid feature values")
+            raise PredictionInputError("Invalid feature values")
+        if features.get("tenure") == 70:
+            raise ValueError("Unexpected model implementation error")
         return {
             "churn_prediction": "Yes",
             "churn_probability": 0.8,
@@ -38,7 +41,7 @@ def api_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(api, "load_config", lambda: config)
     monkeypatch.setattr(api, "configure_logging", lambda _level: None)
     monkeypatch.setattr(api, "ModelService", StubModelService)
-    with TestClient(api.app) as client:
+    with TestClient(api.app, raise_server_exceptions=False) as client:
         yield client
 
 
@@ -93,7 +96,7 @@ def test_predict_route_rejects_invalid_request_schema(api_client: TestClient) ->
     assert response.status_code == 422
 
 
-def test_predict_route_maps_prediction_value_error_to_422(
+def test_predict_route_maps_prediction_input_error_to_422(
     api_client: TestClient,
 ) -> None:
     features = _valid_features()
@@ -103,6 +106,17 @@ def test_predict_route_maps_prediction_value_error_to_422(
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Invalid feature values"
+
+
+def test_predict_route_does_not_report_internal_value_error_as_client_error(
+    api_client: TestClient,
+) -> None:
+    features = _valid_features()
+    features["tenure"] = 70
+
+    response = api_client.post("/predict", json={"features": features})
+
+    assert response.status_code == 500
 
 
 def test_model_load_failure_fails_application_startup(

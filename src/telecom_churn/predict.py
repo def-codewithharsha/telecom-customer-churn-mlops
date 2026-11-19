@@ -7,7 +7,11 @@ from typing import Any
 
 import pandas as pd
 
-from telecom_churn.exception import TelecomChurnError
+from telecom_churn.exception import (
+    ConfigurationError,
+    PredictionInputError,
+    TelecomChurnError,
+)
 from telecom_churn.model_artifact import load_model_artifact
 
 
@@ -31,7 +35,9 @@ class ModelService:
             or not isfinite(self.threshold)
             or not 0.0 <= self.threshold <= 1.0
         ):
-            raise ValueError("Prediction threshold must be finite and between 0 and 1.")
+            raise ConfigurationError(
+                "Prediction threshold must be finite and between 0 and 1."
+            )
         self.threshold = float(self.threshold)
 
         if not callable(getattr(self.model, "predict_proba", None)):
@@ -78,7 +84,7 @@ class ModelService:
         unexpected = sorted(supplied - expected)
 
         if missing or unexpected:
-            raise ValueError(
+            raise PredictionInputError(
                 f"Feature mismatch. Missing: {missing}; unexpected: {unexpected}"
             )
 

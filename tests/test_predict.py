@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from sklearn.linear_model import LogisticRegression
 
-from telecom_churn.exception import TelecomChurnError
+from telecom_churn.exception import ConfigurationError, PredictionInputError, TelecomChurnError
 from telecom_churn.model_artifact import save_model_artifact
 from telecom_churn.predict import ModelService
 
@@ -51,7 +51,7 @@ def test_model_service_rejects_missing_or_unexpected_features(tmp_path) -> None:
     _save_test_model(model_path)
     service = ModelService(model_path)
 
-    with pytest.raises(ValueError, match="Feature mismatch"):
+    with pytest.raises(PredictionInputError, match="Feature mismatch"):
         service.predict({"tenure": 12, "unknown": 1})
 
 
@@ -70,7 +70,7 @@ def test_model_service_rejects_invalid_threshold(tmp_path) -> None:
     model_path = tmp_path / "model.skops"
     _save_test_model(model_path)
 
-    with pytest.raises(ValueError, match="between 0 and 1"):
+    with pytest.raises(ConfigurationError, match="between 0 and 1"):
         ModelService(model_path, threshold=1.5)
 
 

@@ -1,10 +1,14 @@
 """Load and validate project configuration."""
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from telecom_churn.exception import ConfigurationError
 
 
 @dataclass(frozen=True)
@@ -33,45 +37,125 @@ def find_project_root() -> Path:
     current = Path(__file__).resolve()
 
     for candidate in current.parents:
-        if (candidate / "pyproject.toml").exists():
+        if (candidate / "pyproject.toml").is_file():
             return candidate
 
-    raise FileNotFoundError("Could not find project root containing pyproject.toml")
+    raise ConfigurationError("Could not find project root containing pyproject.toml")
 
 
 def load_config(config_path: str | Path = "configs/dev.yaml") -> AppConfig:
-    """Load YAML configuration and resolve project paths."""
+    """Load YAML configuration, validate its shape and values, and resolve paths."""
     root = find_project_root()
     path = Path(config_path)
-
     if not path.is_absolute():
         path = root / path
 
-    if not path.exists():
-        raise FileNotFoundError(f"Configuration file not found: {path}")
+    if not path.is_file():
+        raise ConfigurationError(f"Configuration file not found: {path}")
 
-    with path.open("r", encoding="utf-8") as file:
-        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            raw: Any = yaml.safe_load(file)
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ConfigurationError(f"Could not read configuration at {path}: {exc}") from exc
 
-    project = raw["project"]
-    data = raw["data"]
-    training = raw["training"]
-    logging = raw.get("logging", {})
+    if not isinstance(raw, Mapping):
+        raise ConfigurationError("Configuration document must be a YAML mapping.")
 
-    test_size = float(training["test_size"])
-    if not 0 < test_size < 1:
-        raise ValueError("training.test_size must be between 0 and 1")
+    _check_keys(raw, {"project", "data", "training", "logging"}, "root")
+    project = _require_mapping(raw, "project")
+    data = _require_mapping(raw, "data")
+    training = _require_mapping(raw, "training")
+    logging_config = raw.get("logging", {})
+    if not isinstance(logging_config, Mapping):
+        raise ConfigurationError("Configuration section 'logging' must be a mapping.")
+
+    _check_keys(project, {"name", "random_seed"}, "project")
+    _check_keys(data, {"raw_path", "target_column"}, "data")
+    _check_keys(training, {"test_size", "model_path"}, "training")
+    _check_keys(logging_config, {"level"}, "logging")
+
+    project_name = _require_nonempty_string(project, "name", "project")
+    random_seed = _require_integer(project, "random_seed", "project")
+    raw_path = _resolve_path(root, _require_nonempty_string(data, "raw_path", "data"))
+    target_column = _require_nonempty_string(data, "target_column", "data")
+    model_path = _resolve_path(
+        root,
+        _require_nonempty_string(training, "model_path", "training"),
+    )
+    test_size = training.get("test_size")
+    if (
+        isinstance(test_size, bool)
+        or not isinstance(test_size, (int, float))
+        or not math.isfinite(test_size)
+        or not 0 < test_size < 1
+    ):
+        raise ConfigurationError("training.test_size must be a finite number between 0 and 1.")
+
+    log_level = logging_config.get("level", "INFO")
+    if not isinstance(log_level, str) or log_level.upper() not in {
+        "CRITICAL",
+        "ERROR",
+        "WARNING",
+        "INFO",
+        "DEBUG",
+        "NOTSET",
+    }:
+        raise ConfigurationError(
+            "logging.level must be one of CRITICAL, ERROR, WARNING, INFO, DEBUG, or NOTSET."
+        )
 
     return AppConfig(
-        project_name=str(project["name"]),
-        random_seed=int(project["random_seed"]),
-        data=DataConfig(
-            raw_path=root / data["raw_path"],
-            target_column=str(data["target_column"]),
-        ),
-        training=TrainingConfig(
-            test_size=test_size,
-            model_path=root / training["model_path"],
-        ),
-        log_level=str(logging.get("level", "INFO")).upper(),
+        project_name=project_name,
+        random_seed=random_seed,
+        data=DataConfig(raw_path=raw_path, target_column=target_column),
+        training=TrainingConfig(test_size=float(test_size), model_path=model_path),
+        log_level=log_level.upper(),
     )
+
+
+def _require_mapping(parent: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    """Return a required section as a mapping or raise a useful config error."""
+    value = parent.get(key)
+    if not isinstance(value, Mapping):
+        raise ConfigurationError(f"Configuration section {key!r} must be a mapping.")
+    return value
+
+
+def _check_keys(section: Mapping[str, Any], allowed: set[str], name: str) -> None:
+    """Reject misspelled or unsupported configuration keys."""
+    if any(not isinstance(key, str) for key in section):
+        raise ConfigurationError(f"Configuration section {name!r} keys must be strings.")
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ConfigurationError(f"Configuration section {name!r} has unknown keys: {unknown}.")
+
+
+def _require_nonempty_string(
+    section: Mapping[str, Any],
+    key: str,
+    section_name: str,
+) -> str:
+    """Read a required non-empty string without coercing YAML values."""
+    value = section.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigurationError(
+            f"Configuration value {section_name}.{key} must be a non-empty string."
+        )
+    return value.strip()
+
+
+def _require_integer(section: Mapping[str, Any], key: str, section_name: str) -> int:
+    """Read a required integer and reject booleans, which YAML also treats as ints."""
+    value = section.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigurationError(f"Configuration value {section_name}.{key} must be an integer.")
+    if value < 0:
+        raise ConfigurationError(f"Configuration value {section_name}.{key} must be non-negative.")
+    return value
+
+
+def _resolve_path(root: Path, value: str) -> Path:
+    """Resolve relative paths from the repository root; preserve absolute paths."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else root / path
