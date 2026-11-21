@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from telecom_churn.model_trainer import _evaluate_release_gate
+from telecom_churn.model_evaluation import evaluate_release_gate
 
 
 def _config() -> SimpleNamespace:
@@ -16,7 +16,7 @@ def _config() -> SimpleNamespace:
 
 
 def test_release_gate_passes_when_each_criterion_is_met() -> None:
-    result = _evaluate_release_gate(
+    result = evaluate_release_gate(
         cv_average_precision=0.66,
         baseline_average_precision=0.30,
         holdout_average_precision=0.63,
@@ -29,7 +29,7 @@ def test_release_gate_passes_when_each_criterion_is_met() -> None:
 
 
 def test_release_gate_reports_all_failed_criteria() -> None:
-    result = _evaluate_release_gate(
+    result = evaluate_release_gate(
         cv_average_precision=0.59,
         baseline_average_precision=0.56,
         holdout_average_precision=0.54,

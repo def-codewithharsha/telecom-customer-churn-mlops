@@ -1,25 +1,12 @@
-"""Compare candidate churn classifiers and save the selected model."""
-import os
+"""Coordinate candidate training, evaluation, tracking, and artifact saving."""
+
 from pathlib import Path
 from typing import Any
 
-import mlflow
-import mlflow.data
-import mlflow.sklearn
 import pandas as pd
-from mlflow.models import infer_signature
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    average_precision_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
 
@@ -27,11 +14,14 @@ from telecom_churn.config import AppConfig
 from telecom_churn.exception import ModelQualityGateError
 from telecom_churn.features import build_preprocessor, split_features_target
 from telecom_churn.logger import get_logger
+from telecom_churn.mlflow_tracking import log_mlflow_run
 from telecom_churn.model_artifact import save_model_artifact
+from telecom_churn.model_evaluation import evaluate_holdout, evaluate_release_gate
 
 logger = get_logger(__name__)
 
 SELECTION_METRIC = "average_precision"
+CV_FOLDS = 5
 
 
 def _build_candidates(config: AppConfig) -> dict[str, Pipeline]:
@@ -70,9 +60,8 @@ def _build_candidates(config: AppConfig) -> dict[str, Pipeline]:
 
 
 def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
-    """Select a candidate with CV, evaluate it on holdout data, and save it."""
+    """Select a candidate, evaluate it, enforce release policy, and save it."""
     features, target = split_features_target(dataframe, config)
-
     x_train, x_test, y_train, y_test = train_test_split(
         features,
         target,
@@ -82,7 +71,7 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
     )
 
     cv = StratifiedKFold(
-        n_splits=5,
+        n_splits=CV_FOLDS,
         shuffle=True,
         random_state=config.random_seed,
     )
@@ -93,47 +82,9 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
         "recall": "recall",
         "f1": "f1",
     }
-
-    candidate_results: dict[str, dict[str, float]] = {}
     candidates = _build_candidates(config)
-
-    for name, candidate in candidates.items():
-        scores = cross_validate(
-            candidate,
-            x_train,
-            y_train,
-            cv=cv,
-            scoring=scoring,
-            n_jobs=-1,
-            error_score="raise",
-        )
-        candidate_results[name] = {
-            metric: float(scores[f"test_{metric}"].mean())
-            for metric in scoring
-        }
-        logger.info(
-            "CV %s: PR-AUC=%.4f ROC-AUC=%.4f",
-            name,
-            candidate_results[name]["average_precision"],
-            candidate_results[name]["roc_auc"],
-        )
-
-    baseline_scores = cross_validate(
-        DummyClassifier(strategy="prior"),
-        x_train,
-        y_train,
-        cv=cv,
-        scoring={"average_precision": "average_precision"},
-        n_jobs=1,
-        error_score="raise",
-    )
-    baseline_average_precision = float(
-        baseline_scores["test_average_precision"].mean()
-    )
-    logger.info(
-        "CV prior baseline: PR-AUC=%.4f",
-        baseline_average_precision,
-    )
+    candidate_results = _compare_candidates(candidates, x_train, y_train, cv, scoring)
+    baseline_average_precision = _evaluate_prior_baseline(x_train, y_train, cv)
 
     selected_name = max(
         candidate_results,
@@ -142,40 +93,23 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
     selected_model = candidates[selected_name]
     selected_model.fit(x_train, y_train)
 
-    probabilities = selected_model.predict_proba(x_test)[:, 1]
-    predictions = selected_model.predict(x_test)
-
-    holdout_metrics: dict[str, Any] = {
-        "roc_auc": float(roc_auc_score(y_test, probabilities)),
-        "average_precision": float(average_precision_score(y_test, probabilities)),
-        "precision": float(precision_score(y_test, predictions, zero_division=0)),
-        "recall": float(recall_score(y_test, predictions, zero_division=0)),
-        "f1": float(f1_score(y_test, predictions, zero_division=0)),
-        "confusion_matrix": confusion_matrix(y_test, predictions).tolist(),
-        "classification_report": classification_report(
-            y_test,
-            predictions,
-            target_names=["no_churn", "churn"],
-            output_dict=True,
-            zero_division=0,
-        ),
-    }
-
+    holdout_metrics = evaluate_holdout(selected_model, x_test, y_test)
+    quality_gate = evaluate_release_gate(
+        cv_average_precision=candidate_results[selected_name][SELECTION_METRIC],
+        baseline_average_precision=baseline_average_precision,
+        holdout_average_precision=holdout_metrics["average_precision"],
+        config=config,
+    )
     results: dict[str, Any] = {
         "selection_metric": SELECTION_METRIC,
         "selected_model": selected_name,
         "cross_validation": candidate_results,
         "baseline": {"average_precision": baseline_average_precision},
         "holdout": holdout_metrics,
+        "quality_gate": quality_gate,
     }
-    results["quality_gate"] = _evaluate_release_gate(
-        cv_average_precision=candidate_results[selected_name]["average_precision"],
-        baseline_average_precision=baseline_average_precision,
-        holdout_average_precision=holdout_metrics["average_precision"],
-        config=config,
-    )
 
-    run_id = _log_mlflow_run(
+    run_id = log_mlflow_run(
         dataframe=dataframe,
         train_features=x_train,
         selected_model=selected_model,
@@ -183,17 +117,15 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
         results=results,
         config=config,
     )
-
     results["mlflow_run_id"] = run_id
     logger.info("MLflow tracking run: %s", run_id)
 
-    if not results["quality_gate"]["passed"]:
-        failures = "; ".join(results["quality_gate"]["failures"])
+    if not quality_gate["passed"]:
+        failures = "; ".join(quality_gate["failures"])
         logger.error("Model release gate failed; artifact was not saved: %s", failures)
         raise ModelQualityGateError(f"Model release gate failed: {failures}")
 
-    logger.info("Model release gate passed: %s", results["quality_gate"]["checks"])
-
+    logger.info("Model release gate passed: %s", quality_gate["checks"])
     _save_model_bundle(selected_model, config, results, selected_name)
     logger.info("Selected model: %s", selected_name)
     logger.info(
@@ -203,44 +135,58 @@ def train_model(dataframe: pd.DataFrame, config: AppConfig) -> dict[str, Any]:
         holdout_metrics["precision"],
         holdout_metrics["recall"],
     )
-
     return results
 
 
-def _evaluate_release_gate(
-    *,
-    cv_average_precision: float,
-    baseline_average_precision: float,
-    holdout_average_precision: float,
-    config: AppConfig,
-) -> dict[str, Any]:
-    """Compare the selected candidate with configured performance requirements."""
-    gate_config = config.quality_gates
-    improvement = cv_average_precision - baseline_average_precision
-    checks = {
-        "cv_average_precision": {
-            "actual": cv_average_precision,
-            "minimum": gate_config.min_cv_average_precision,
-            "passed": cv_average_precision >= gate_config.min_cv_average_precision,
-        },
-        "holdout_average_precision": {
-            "actual": holdout_average_precision,
-            "minimum": gate_config.min_holdout_average_precision,
-            "passed": holdout_average_precision
-            >= gate_config.min_holdout_average_precision,
-        },
-        "improvement_over_prior_baseline": {
-            "actual": improvement,
-            "minimum": gate_config.min_improvement_over_baseline,
-            "passed": improvement >= gate_config.min_improvement_over_baseline,
-        },
-    }
-    failures = [
-        f"{name}={check['actual']:.4f} is below minimum {check['minimum']:.4f}"
-        for name, check in checks.items()
-        if not check["passed"]
-    ]
-    return {"passed": not failures, "checks": checks, "failures": failures}
+def _compare_candidates(
+    candidates: dict[str, Pipeline],
+    features: pd.DataFrame,
+    target: pd.Series,
+    cv: StratifiedKFold,
+    scoring: dict[str, str],
+) -> dict[str, dict[str, float]]:
+    """Run cross-validation and return mean scores for each candidate."""
+    results: dict[str, dict[str, float]] = {}
+    for name, candidate in candidates.items():
+        scores = cross_validate(
+            candidate,
+            features,
+            target,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=-1,
+            error_score="raise",
+        )
+        results[name] = {
+            metric: float(scores[f"test_{metric}"].mean()) for metric in scoring
+        }
+        logger.info(
+            "CV %s: PR-AUC=%.4f ROC-AUC=%.4f",
+            name,
+            results[name]["average_precision"],
+            results[name]["roc_auc"],
+        )
+    return results
+
+
+def _evaluate_prior_baseline(
+    features: pd.DataFrame,
+    target: pd.Series,
+    cv: StratifiedKFold,
+) -> float:
+    """Score an always-prior classifier using the same CV splits as candidates."""
+    scores = cross_validate(
+        DummyClassifier(strategy="prior"),
+        features,
+        target,
+        cv=cv,
+        scoring={"average_precision": "average_precision"},
+        n_jobs=1,
+        error_score="raise",
+    )
+    average_precision = float(scores["test_average_precision"].mean())
+    logger.info("CV prior baseline: PR-AUC=%.4f", average_precision)
+    return average_precision
 
 
 def _save_model_bundle(
@@ -263,122 +209,7 @@ def _save_model_bundle(
             "results": results,
         },
     )
-
     logger.info("Saved selected safe model artifact to %s", model_path)
     logger.info("Model artifact SHA-256: %s", artifact_digest)
-    logger.info("Saved model metadata to %s", model_path.with_suffix('.json'))
+    logger.info("Saved model metadata to %s", model_path.with_suffix(".json"))
     return model_path
-
-def _log_mlflow_run(
-    dataframe: pd.DataFrame,
-    train_features: pd.DataFrame,
-    selected_model: Pipeline,
-    candidates: dict[str, Pipeline],
-    results: dict[str, Any],
-    config: AppConfig,
-) -> str:
-    """Record candidate comparisons, dataset metadata, and selected model in MLflow."""
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
-    mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment(config.project_name)
-
-    dataset = mlflow.data.from_pandas(
-        dataframe,
-        source=str(config.data.raw_path),
-        name=config.project_name,
-        targets=config.data.target_column,
-    )
-
-    with mlflow.start_run(run_name="churn-model-comparison") as parent_run:
-        mlflow.log_params(
-            {
-                "selection_metric": results["selection_metric"],
-                "selected_model": results["selected_model"],
-                "random_seed": config.random_seed,
-                "test_size": config.training.test_size,
-                "cv_folds": 5,
-                "target_column": config.data.target_column,
-                "minimum_cv_average_precision": (
-                    config.quality_gates.min_cv_average_precision
-                ),
-                "minimum_holdout_average_precision": (
-                    config.quality_gates.min_holdout_average_precision
-                ),
-                "minimum_improvement_over_baseline": (
-                    config.quality_gates.min_improvement_over_baseline
-                ),
-            }
-        )
-        mlflow.set_tag("project", config.project_name)
-        mlflow.set_tag(
-            "quality_gate_status",
-            "passed" if results["quality_gate"]["passed"] else "failed",
-        )
-        mlflow.log_input(dataset, context="training")
-
-        for name, metrics in results["cross_validation"].items():
-            candidate = candidates[name]
-            classifier_params = candidate.named_steps["classifier"].get_params(
-                deep=False
-            )
-
-            with mlflow.start_run(run_name=name, nested=True):
-                mlflow.log_param("algorithm", name)
-                mlflow.log_params(
-                    {
-                        f"classifier_{key}": str(value)
-                        for key, value in classifier_params.items()
-                    }
-                )
-                mlflow.log_metrics(
-                    {f"cv_{key}": float(value) for key, value in metrics.items()}
-                )
-
-        holdout_metrics = {
-            f"holdout_{key}": float(value)
-            for key, value in results["holdout"].items()
-            if isinstance(value, (int, float))
-        }
-        mlflow.log_metrics(holdout_metrics)
-        mlflow.log_metric(
-            "cv_prior_baseline_average_precision",
-            results["baseline"]["average_precision"],
-        )
-        mlflow.log_metrics(
-            {
-                "quality_gate_passed": float(results["quality_gate"]["passed"]),
-                "cv_average_precision_improvement_over_baseline": results[
-                    "quality_gate"
-                ]["checks"]["improvement_over_prior_baseline"]["actual"],
-            }
-        )
-        mlflow.log_dict(results["quality_gate"], "evaluation/quality_gate.json")
-
-        mlflow.log_dict(
-            {
-                "confusion_matrix": results["holdout"]["confusion_matrix"],
-                "classification_report": results["holdout"]["classification_report"],
-            },
-            "evaluation/holdout_report.json",
-        )
-
-        if results["quality_gate"]["passed"]:
-            model_example = train_features.head(3)
-            signature = infer_signature(
-                model_example,
-                selected_model.predict(model_example),
-            )
-            mlflow.sklearn.log_model(
-                selected_model,
-                name="selected_model",
-                signature=signature,
-                input_example=model_example,
-                skops_trusted_types=[
-                    "numpy.dtype",
-                    "sklearn.compose._column_transformer.make_column_selector",
-                ],
-            )
-
-        run_id = parent_run.info.run_id
-
-    return run_id
