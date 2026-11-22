@@ -20,7 +20,7 @@ models/*
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 !models/.gitkeep
-
+logs/
 # Editor and operating system
 .vscode/
 .DS_Store

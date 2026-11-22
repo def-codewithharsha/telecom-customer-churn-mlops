@@ -1,0 +1,23 @@
+project:
+  name: telecom-customer-churn
+  random_seed: 42
+
+data:
+  # Required by the shared application config schema; the inference API does
+  # not load training data. A future production training job must provide its
+  # own accessible input dataset path.
+  raw_path: data/raw/churn.csv
+  target_column: Churn
+
+training:
+  test_size: 0.2
+  model_path: models/churn_model.skops
+
+# These are starter project policy values, not business-approved release limits.
+quality_gates:
+  min_cv_average_precision: 0.60
+  min_holdout_average_precision: 0.55
+  min_improvement_over_baseline: 0.05
+
+logging:
+  level: INFO

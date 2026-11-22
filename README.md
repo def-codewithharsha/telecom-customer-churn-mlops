@@ -7,7 +7,8 @@ A Python project for training and serving a telecom customer churn classifier. I
 ## Repository layout
 
 ```text
-configs/dev.yaml             Local training and model-path settings
+configs/dev.yaml             Local development settings
+configs/prod.yaml            Container/inference settings
 data/raw/                    Put the input CSV here (not committed)
 models/                      Locally generated model bundle (not committed)
 src/telecom_churn/           Data checks, features, training, prediction, and API
@@ -42,8 +43,11 @@ Place a CSV dataset at `data/raw/churn.csv`, or update `data.raw_path` in `confi
 Run training from the project root:
 
 ```powershell
+$env:TELECOM_CHURN_CONFIG = "configs/dev.yaml"
 python -m telecom_churn.train
 ```
+
+The profile is selected explicitly with `TELECOM_CHURN_CONFIG`; there is no implicit fallback. Set the variable in each PowerShell session where you run training or the local API. In ECS, set it in the task definition to `configs/prod.yaml` (the Docker image also defaults to that profile).
 
 Training splits the data into stratified train and holdout sets, compares logistic regression, random forest, and extra trees using five-fold stratified cross-validation, and selects by mean average precision. Before saving a deployable model artifact, it checks configured minimum CV and holdout PR-AUC and requires a minimum CV PR-AUC improvement over a `DummyClassifier` prior baseline. The initial floors in `configs/dev.yaml` are project learning policies based on observed full-dataset metrics; they are not business-approved production criteria. Failed candidates are recorded in MLflow without logging a model artifact, and training exits with an error. Passing candidates are saved as a safe sklearn model at `models/churn_model.skops` with JSON metadata at `models/churn_model.json`. The metadata includes SHA-256 digests for corruption detection. For deployment, set `MODEL_ARTIFACT_SHA256` to the independently recorded artifact digest so the API also checks the expected artifact identity.
 
@@ -63,6 +67,8 @@ Train a model first. Then start the API from the repository root:
 ```powershell
 uvicorn telecom_churn.api:app --app-dir src --host 127.0.0.1 --port 8080
 ```
+
+Set `$env:TELECOM_CHURN_CONFIG = "configs/dev.yaml"` in that PowerShell session before starting Uvicorn.
 
 The API provides:
 
@@ -135,7 +141,7 @@ Not implemented yet:
 - Automated deployment, cloud infrastructure, and environment promotion
 - Shared, durable MLflow tracking/artifact storage and governed model registry/approval
 - A release flow that pins and promotes a specific model artifact
-- Enforced model-quality acceptance thresholds and a business-selected classification threshold
+- Business-approved model-quality thresholds and a business-selected classification threshold
 - Production monitoring for latency, errors, traffic, data quality, and model performance
 - Authentication/authorization, rate limits, secrets handling, and deployment security controls
 - Rollback, incident runbooks, and scheduled/event-driven retraining
@@ -145,7 +151,7 @@ These are next steps for a production service; the right choices depend on its a
 
 ## Configuration
 
-The local configuration is `configs/dev.yaml`. It sets the project name, random seed, raw CSV path, target column, holdout size, model output path, quality-gate floors, and log level. Paths are resolved relative to the repository root. Review the quality-gate thresholds against a frozen, representative evaluation set and business costs before production use. Do not put credentials or secrets in YAML files.
+Configuration selection is explicit: pass a path to `load_config()` or set `TELECOM_CHURN_CONFIG` to a YAML profile. `configs/dev.yaml` is for local training and API development; `configs/prod.yaml` is the container/inference profile. Paths are resolved relative to the repository root. Review the quality-gate thresholds against a frozen, representative evaluation set and business costs before production promotion. Do not put credentials or secrets in YAML files.
 
 ## License
 

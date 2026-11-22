@@ -15,6 +15,7 @@ def config_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
     (tmp_path / "configs").mkdir()
     monkeypatch.setattr(config, "find_project_root", lambda: tmp_path)
+    monkeypatch.delenv("TELECOM_CHURN_CONFIG", raising=False)
     return tmp_path
 
 
@@ -43,7 +44,7 @@ def test_load_config_validates_values_and_resolves_relative_paths(
 ) -> None:
     _write_config(config_root, yaml.safe_dump(_valid_config()))
 
-    result = config.load_config()
+    result = config.load_config("configs/dev.yaml")
 
     assert result.project_name == "churn-test"
     assert result.random_seed == 17
@@ -75,7 +76,7 @@ def test_load_config_rejects_malformed_or_incomplete_documents(
     _write_config(config_root, contents)
 
     with pytest.raises(ConfigurationError, match=message):
-        config.load_config()
+        config.load_config("configs/dev.yaml")
 
 
 @pytest.mark.parametrize("test_size", [0, 1, -0.1, True, float("nan"), "0.2"])
@@ -88,7 +89,7 @@ def test_load_config_rejects_invalid_test_size(
     _write_config(config_root, yaml.safe_dump(values))
 
     with pytest.raises(ConfigurationError, match="training.test_size"):
-        config.load_config()
+        config.load_config("configs/dev.yaml")
 
 
 def test_load_config_rejects_unknown_keys(config_root: Path) -> None:
@@ -97,7 +98,7 @@ def test_load_config_rejects_unknown_keys(config_root: Path) -> None:
     _write_config(config_root, yaml.safe_dump(values))
 
     with pytest.raises(ConfigurationError, match="unknown keys.*test_szie"):
-        config.load_config()
+        config.load_config("configs/dev.yaml")
 
 
 def test_load_config_rejects_invalid_random_seed_and_log_level(
@@ -108,14 +109,14 @@ def test_load_config_rejects_invalid_random_seed_and_log_level(
     _write_config(config_root, yaml.safe_dump(values))
 
     with pytest.raises(ConfigurationError, match="random_seed must be an integer"):
-        config.load_config()
+        config.load_config("configs/dev.yaml")
 
     values = _valid_config()
     values["logging"]["level"] = "TRACE"  # type: ignore[index]
     _write_config(config_root, yaml.safe_dump(values))
 
     with pytest.raises(ConfigurationError, match="logging.level"):
-        config.load_config()
+        config.load_config("configs/dev.yaml")
 
 
 @pytest.mark.parametrize(
@@ -131,4 +132,37 @@ def test_load_config_rejects_invalid_quality_gate_metrics(
     _write_config(config_root, yaml.safe_dump(values))
 
     with pytest.raises(ConfigurationError, match="quality_gates.min_cv_average_precision"):
+        config.load_config("configs/dev.yaml")
+
+
+def test_load_config_uses_environment_selected_profile(
+    config_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_config(config_root, yaml.safe_dump(_valid_config()))
+    monkeypatch.setenv("TELECOM_CHURN_CONFIG", "configs/dev.yaml")
+
+    result = config.load_config()
+
+    assert result.project_name == "churn-test"
+
+
+def test_load_config_fails_when_no_profile_is_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TELECOM_CHURN_CONFIG", raising=False)
+
+    with pytest.raises(ConfigurationError, match="TELECOM_CHURN_CONFIG"):
         config.load_config()
+
+
+def test_explicit_config_path_overrides_environment_profile(
+    config_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_config(config_root, yaml.safe_dump(_valid_config()))
+    monkeypatch.setenv("TELECOM_CHURN_CONFIG", "configs/missing.yaml")
+
+    result = config.load_config("configs/dev.yaml")
+
+    assert result.project_name == "churn-test"

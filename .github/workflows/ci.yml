@@ -16,6 +16,8 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      TELECOM_CHURN_CONFIG: configs/dev.yaml
 
     steps:
       - name: Check out repository
