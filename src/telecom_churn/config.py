@@ -1,6 +1,7 @@
 """Load and validate project configuration."""
 
 import math
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,8 +52,21 @@ def find_project_root() -> Path:
     raise ConfigurationError("Could not find project root containing pyproject.toml")
 
 
-def load_config(config_path: str | Path = "configs/dev.yaml") -> AppConfig:
-    """Load YAML configuration, validate its shape and values, and resolve paths."""
+def load_config(config_path: str | Path | None = None) -> AppConfig:
+    """Load the explicitly selected config or TELECOM_CHURN_CONFIG profile.
+
+    There is intentionally no implicit development fallback. Each process must
+    select its configuration explicitly so a production service cannot silently
+    start with development settings.
+    """
+    if config_path is None:
+        config_path = os.getenv("TELECOM_CHURN_CONFIG")
+    if config_path is None or not str(config_path).strip():
+        raise ConfigurationError(
+            "Configuration profile is not selected. Pass config_path or set "
+            "TELECOM_CHURN_CONFIG (for example, configs/dev.yaml or configs/prod.yaml)."
+        )
+
     root = find_project_root()
     path = Path(config_path)
     if not path.is_absolute():
