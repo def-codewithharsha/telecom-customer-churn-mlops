@@ -1,0 +1,185 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecs-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy to ECS
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      vars.AWS_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'telecom-churn-api' }}
+      ECS_CLUSTER_NAME: ${{ vars.ECS_CLUSTER_NAME }}
+      ECS_SERVICE_NAME: ${{ vars.ECS_SERVICE_NAME }}
+      ECS_TASK_EXECUTION_ROLE_ARN: ${{ vars.ECS_TASK_EXECUTION_ROLE_ARN }}
+      ECS_LOG_GROUP_NAME: ${{ vars.ECS_LOG_GROUP_NAME || '/ecs/telecom-churn-api' }}
+      MODEL_ARTIFACT_S3_PREFIX: ${{ vars.MODEL_ARTIFACT_S3_PREFIX }}
+      MODEL_ARTIFACT_SHA256: ${{ vars.MODEL_ARTIFACT_SHA256 }}
+      SERVICE_HEALTHCHECK_URL: ${{ vars.SERVICE_HEALTHCHECK_URL }}
+
+    steps:
+      - name: Check out the exact commit that passed CI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Validate deployment settings
+        shell: bash
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          required=(
+            AWS_DEPLOY_ROLE_ARN
+            ECS_CLUSTER_NAME
+            ECS_SERVICE_NAME
+            ECS_TASK_EXECUTION_ROLE_ARN
+            MODEL_ARTIFACT_S3_PREFIX
+            MODEL_ARTIFACT_SHA256
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required production environment value: $name" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$MODEL_ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "MODEL_ARTIFACT_SHA256 must be a lowercase SHA-256 digest." >&2
+            exit 1
+          fi
+          if [[ "$MODEL_ARTIFACT_S3_PREFIX" != s3://* ]]; then
+            echo "MODEL_ARTIFACT_S3_PREFIX must be an S3 URI prefix." >&2
+            exit 1
+          fi
+
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActionsECSDeploy
+          allowed-account-ids: "423716910083"
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+
+      - name: Retrieve approved model artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="${MODEL_ARTIFACT_S3_PREFIX%/}"
+          mkdir -p models
+          aws s3 cp "$prefix/churn_model.skops" models/churn_model.skops
+          aws s3 cp "$prefix/churn_model.json" models/churn_model.json
+
+      - name: Build immutable image
+        id: build-image
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEPLOY_RUN_ID: ${{ github.run_id }}
+          DEPLOY_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image="$ECR_REGISTRY/$ECR_REPOSITORY:$DEPLOY_SHA-$DEPLOY_RUN_ID-$DEPLOY_RUN_ATTEMPT"
+          docker build --pull --tag "$image" .
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-check production image and model digest
+        shell: bash
+        env:
+          IMAGE: ${{ steps.build-image.outputs.image }}
+        run: |
+          set -euo pipefail
+          container_name="telecom-churn-cd-smoke-${GITHUB_RUN_ID}"
+          cleanup() { docker rm --force "$container_name" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach \
+            --name "$container_name" \
+            --publish 127.0.0.1:18080:8080 \
+            --env "MODEL_ARTIFACT_SHA256=$MODEL_ARTIFACT_SHA256" \
+            "$IMAGE"
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/ready >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != true ]]; then
+            docker logs "$container_name"
+            exit 1
+          fi
+          curl --fail --silent http://127.0.0.1:18080/health
+
+      - name: Push image to ECR
+        shell: bash
+        env:
+          IMAGE: ${{ steps.build-image.outputs.image }}
+        run: docker push "$IMAGE"
+
+      - name: Prepare ECS task definition
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq --arg execution_role "$ECS_TASK_EXECUTION_ROLE_ARN" \
+            '.executionRoleArn = $execution_role' \
+            ecs/task-definition.json > "$RUNNER_TEMP/task-definition.json"
+
+      - name: Render image, model digest, and logging settings
+        id: task-definition
+        uses: aws-actions/amazon-ecs-render-task-definition@138c24f321fdbdf7edee4a685519d253cae2cdea # v1.9.0
+        with:
+          task-definition: ${{ runner.temp }}/task-definition.json
+          container-name: telecom-churn-api
+          image: ${{ steps.build-image.outputs.image }}
+          environment-variables: |
+            TELECOM_CHURN_CONFIG=configs/prod.yaml
+            MODEL_ARTIFACT_SHA256=${{ vars.MODEL_ARTIFACT_SHA256 }}
+          log-configuration-log-driver: awslogs
+          log-configuration-options: |
+            awslogs-group=${{ env.ECS_LOG_GROUP_NAME }}
+            awslogs-region=${{ env.AWS_REGION }}
+            awslogs-stream-prefix=ecs
+
+      - name: Deploy task definition and wait for ECS stability
+        uses: aws-actions/amazon-ecs-deploy-task-definition@c465972ecbd160473f22e683363b422a5412a3de # v2.6.3
+        with:
+          task-definition: ${{ steps.task-definition.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER_NAME }}
+          service: ${{ env.ECS_SERVICE_NAME }}
+          wait-for-service-stability: true
+          wait-max-delay-seconds: 15
+
+      - name: Check deployed service readiness
+        if: ${{ env.SERVICE_HEALTHCHECK_URL != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 \
+            --retry-all-errors "${SERVICE_HEALTHCHECK_URL%/}/ready"

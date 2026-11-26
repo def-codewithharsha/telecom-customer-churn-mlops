@@ -2,7 +2,9 @@
 
 A Python project for training and serving a telecom customer churn classifier. It includes a scikit-learn preprocessing/model pipeline, MLflow experiment logging, a FastAPI prediction API, Docker packaging, and a GitHub Actions training smoke check.
 
-> **Status:** Development/learning project. The repository does not yet include a production deployment workflow, cloud infrastructure, or a committed trained model. See [Current scope and production gaps](#current-scope-and-production-gaps).
+> **Status:** Development/learning project. The repository includes a gated AWS deployment workflow, but AWS infrastructure and deployment settings are not provisioned here, and no trained model is committed. See [Current scope and production gaps](#current-scope-and-production-gaps).
+
+New to the codebase? Start with the [beginner's step-by-step project guide](PROJECT_BUILD_GUIDE.md).
 
 ## Repository layout
 
@@ -14,6 +16,8 @@ models/                      Locally generated model bundle (not committed)
 src/telecom_churn/           Data checks, features, training, prediction, and API
 scripts/create_ci_dataset.py Synthetic dataset used by CI
 .github/workflows/ci.yml     Lint, syntax, and training smoke check
+.github/workflows/deploy.yml OIDC-based ECR and ECS deployment workflow
+ecs/task-definition.json     Fargate task definition template
 Dockerfile                   API container definition
 ```
 
@@ -121,9 +125,32 @@ docker run --rm -p 8080:8080 -e "MODEL_ARTIFACT_SHA256=$($modelMetadata.artifact
 
 Check `http://localhost:8080/health` or open `http://localhost:8080/docs`. The digest is included in the metadata and training logs. In production, inject `MODEL_ARTIFACT_SHA256` from a trusted release record or deployment configuration; do not calculate the expected value from the same artifact at container startup. This local example is for development only.
 
-## CI
+## CI and continuous deployment
 
-The current GitHub Actions workflow runs on pull requests and pushes to `main`. It installs dependencies, runs Ruff and syntax checks, executes unit and API route tests, creates a synthetic CI dataset, runs a training smoke check, then builds and starts a container to check its user and health endpoints. The smoke image is not published or deployed. Broader integration and production deployment tests are still pending.
+The CI workflow runs on pull requests and pushes to `main`. It checks style and syntax, runs the tests, creates a synthetic dataset, runs a training smoke check, then builds and starts a container to check the health endpoints. This smoke image is not published and its synthetic model is never deployed.
+
+The CD workflow runs after a successful CI run on `main`. It uses GitHub OIDC to access AWS, downloads a **versioned, approved** model artifact pair from S3, checks it against the configured artifact digest, builds and smoke-checks the image, pushes a unique commit-and-run-tagged image to ECR, and updates an ECS Fargate service. Deployment waits for ECS stability and can optionally check the public `/ready` endpoint. The workflow is disabled until the repository variable `AWS_DEPLOY_ENABLED` is set to `true`.
+
+### AWS/GitHub setup required before enabling CD
+
+Create the AWS resources first: the ECR repository with image tag immutability enabled, approved model artifact in S3, ECS cluster and service, task execution role, CloudWatch log group, VPC/security groups, and load balancer. Configure ECS deployment circuit-breaker rollback on the service. The task definition template assumes Fargate, 0.5 vCPU, 1 GB memory, container port 8080, and log group `/ecs/telecom-churn-api` by default.
+
+Create a GitHub Environment named `production`, and add these environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `AWS_REGION` | AWS deployment region; defaults to `ap-southeast-2` |
+| `ECS_CLUSTER_NAME` | Existing ECS cluster name |
+| `ECS_SERVICE_NAME` | Existing ECS service name |
+| `ECS_TASK_EXECUTION_ROLE_ARN` | Task execution role used by Fargate to pull from ECR and write CloudWatch logs |
+| `MODEL_ARTIFACT_S3_PREFIX` | Immutable S3 prefix containing `churn_model.skops` and `churn_model.json` |
+| `MODEL_ARTIFACT_SHA256` | Approved artifact digest recorded in the JSON metadata |
+| `ECS_LOG_GROUP_NAME` | Existing CloudWatch log group; defaults to `/ecs/telecom-churn-api` |
+| `SERVICE_HEALTHCHECK_URL` | Optional HTTPS load-balancer base URL; CD checks its `/ready` route |
+
+Add the environment secret `AWS_DEPLOY_ROLE_ARN` for an IAM role that trusts this GitHub repository's `production` environment through OIDC. Grant it only the required ECR push, S3 read, ECS deploy, and `iam:PassRole` access to the task execution role. The AWS role is restricted to account `423716910083` by the workflow. Separately, add the repository variable `AWS_DEPLOY_ENABLED=true` only after the AWS resources and GitHub environment values are ready. No AWS access keys are used by the workflow.
+
+The GitHub OIDC role trust policy must restrict the audience to `sts.amazonaws.com` and the subject (`token.actions.githubusercontent.com:sub`) to this repository's `production` environment. Use the exact subject format GitHub currently issues for this repository: repositories created on or after 15 July 2026 use immutable owner and repository IDs in the subject, so the older name-only subject string may fail. Check GitHub's [OIDC subject claim documentation](https://docs.github.com/en/actions/reference/security/oidc) and the AWS credentials action's [trust policy guidance](https://github.com/aws-actions/configure-aws-credentials#configuring-iam-to-trust-github) when creating the role. If environment protection is enabled, deployments wait for its approval. Keep the S3 model prefix immutable/versioned; changing the model means updating both the prefix and matching digest.
 
 ## Current scope and production gaps
 
@@ -138,9 +165,9 @@ Implemented today:
 
 Not implemented yet:
 
-- Automated deployment, cloud infrastructure, and environment promotion
+- Provisioned AWS infrastructure, GitHub OIDC role, and active deployment variables. The CD workflow and ECS task-definition template are present, but CD remains disabled until AWS resources and GitHub settings are configured.
 - Shared, durable MLflow tracking/artifact storage and governed model registry/approval
-- A release flow that pins and promotes a specific model artifact
+- Governed model approval and automated promotion between environments
 - Business-approved model-quality thresholds and a business-selected classification threshold
 - Production monitoring for latency, errors, traffic, data quality, and model performance
 - Authentication/authorization, rate limits, secrets handling, and deployment security controls
