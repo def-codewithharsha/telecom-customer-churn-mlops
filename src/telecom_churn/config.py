@@ -21,6 +21,8 @@ class DataConfig:
 @dataclass(frozen=True)
 class TrainingConfig:
     test_size: float
+    threshold_beta: float
+    calibration_method: str
     model_path: Path
 
 
@@ -99,7 +101,11 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
 
     _check_keys(project, {"name", "random_seed"}, "project")
     _check_keys(data, {"raw_path", "target_column"}, "data")
-    _check_keys(training, {"test_size", "model_path"}, "training")
+    _check_keys(
+        training,
+        {"test_size", "threshold_beta", "calibration_method", "model_path"},
+        "training",
+    )
     _check_keys(
         quality_gates,
         {
@@ -127,6 +133,22 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         or not 0 < test_size < 1
     ):
         raise ConfigurationError("training.test_size must be a finite number between 0 and 1.")
+    threshold_beta = training.get("threshold_beta")
+    if (
+        isinstance(threshold_beta, bool)
+        or not isinstance(threshold_beta, (int, float))
+        or not math.isfinite(threshold_beta)
+        or threshold_beta <= 0
+    ):
+        raise ConfigurationError("training.threshold_beta must be a finite number greater than 0.")
+    calibration_method = training.get("calibration_method")
+    if not isinstance(calibration_method, str) or calibration_method not in {
+        "sigmoid",
+        "isotonic",
+    }:
+        raise ConfigurationError(
+            "training.calibration_method must be either 'sigmoid' or 'isotonic'."
+        )
 
     min_cv_average_precision = _require_metric(
         quality_gates,
@@ -158,7 +180,12 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         project_name=project_name,
         random_seed=random_seed,
         data=DataConfig(raw_path=raw_path, target_column=target_column),
-        training=TrainingConfig(test_size=float(test_size), model_path=model_path),
+        training=TrainingConfig(
+            test_size=float(test_size),
+            threshold_beta=float(threshold_beta),
+            calibration_method=calibration_method,
+            model_path=model_path,
+        ),
         quality_gates=QualityGateConfig(
             min_cv_average_precision=min_cv_average_precision,
             min_holdout_average_precision=min_holdout_average_precision,

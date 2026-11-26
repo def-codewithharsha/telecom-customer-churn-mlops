@@ -28,6 +28,7 @@ logs/
 .vscode/
 .DS_Store
 Thumbs.db
+PROJECT_BUILD_GUIDE.md
 
 
 #Expriments

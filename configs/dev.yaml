@@ -8,6 +8,10 @@ data:
 
 training:
   test_size: 0.2
+  # F2 weights churn recall more than precision; this is a project assumption.
+  threshold_beta: 2.0
+  # Sigmoid suits this binary, imbalanced dataset; isotonic can overfit small samples.
+  calibration_method: sigmoid
   model_path: models/churn_model.skops
 
 # Starter release policy based on current full-dataset results; review against

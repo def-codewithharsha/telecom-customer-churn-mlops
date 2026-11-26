@@ -2,7 +2,10 @@
 
 from types import SimpleNamespace
 
-from telecom_churn.model_evaluation import evaluate_release_gate
+import numpy as np
+import pandas as pd
+
+from telecom_churn.model_evaluation import evaluate_release_gate, select_fbeta_threshold
 
 
 def _config() -> SimpleNamespace:
@@ -43,3 +46,14 @@ def test_release_gate_reports_all_failed_criteria() -> None:
         "improvement_over_prior_baseline",
     }
     assert len(result["failures"]) == 3
+
+
+def test_select_fbeta_threshold_uses_validation_scores() -> None:
+    target = pd.Series([0, 0, 1, 1])
+    probabilities = np.array([0.2, 0.4, 0.45, 0.8])
+
+    result = select_fbeta_threshold(target, probabilities, beta=2.0)
+
+    assert result["strategy"] == "maximize_f_beta"
+    assert result["threshold"] == 0.45
+    assert result["recall"] == 1.0

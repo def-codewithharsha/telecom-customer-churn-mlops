@@ -5,7 +5,7 @@ import pytest
 
 from telecom_churn.data import validate_raw_data
 from telecom_churn.exception import TelecomChurnError
-from telecom_churn.features import split_features_target
+from telecom_churn.features import add_service_count_features, split_features_target
 
 
 def test_validate_raw_data_accepts_expected_columns(churn_dataframe: pd.DataFrame) -> None:
@@ -98,3 +98,30 @@ def test_split_features_target_allows_missing_imputable_values(
     features, _ = split_features_target(malformed, Config())
 
     assert pd.isna(features.loc[0, "Partner"])
+
+
+def test_add_service_count_features_adds_counts_without_mutating_inputs(
+    churn_dataframe: pd.DataFrame,
+) -> None:
+    features = churn_dataframe.drop(columns=["customerID", "Churn"])
+    original_columns = features.columns.tolist()
+
+    transformed = add_service_count_features(features)
+
+    assert transformed.loc[0, "support_service_count"] == 4
+    assert transformed.loc[0, "streaming_service_count"] == 2
+    assert transformed.loc[0, "active_service_count"] == 9
+    assert features.columns.tolist() == original_columns
+
+
+def test_add_service_count_features_preserves_unknowns_for_imputation(
+    churn_dataframe: pd.DataFrame,
+) -> None:
+    features = churn_dataframe.drop(columns=["customerID", "Churn"])
+    features.loc[0, "TechSupport"] = pd.NA
+
+    transformed = add_service_count_features(features)
+
+    assert pd.isna(transformed.loc[0, "support_service_count"])
+    assert pd.isna(transformed.loc[0, "active_service_count"])
+    assert transformed.loc[0, "streaming_service_count"] == 2

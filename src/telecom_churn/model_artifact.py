@@ -14,6 +14,12 @@ ARTIFACT_SCHEMA_VERSION = 1
 TRUSTED_SKOPS_TYPES = (
     "numpy.dtype",
     "sklearn.compose._column_transformer.make_column_selector",
+    # These sklearn calibration internals and CV splitter are part of the
+    # fitted, version-pinned CalibratedClassifierCV artifact.
+    "sklearn.calibration._CalibratedClassifier",
+    "sklearn.calibration._SigmoidCalibration",
+    "sklearn.model_selection._split.StratifiedKFold",
+    "telecom_churn.features.add_service_count_features",
 )
 _HASH_CHUNK_SIZE = 1024 * 1024
 

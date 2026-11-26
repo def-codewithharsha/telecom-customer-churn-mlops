@@ -11,6 +11,10 @@ data:
 
 training:
   test_size: 0.2
+  # Replace with a threshold policy agreed with the business before real use.
+  threshold_beta: 2.0
+  # Prefer sigmoid here; isotonic may overfit with limited calibration examples.
+  calibration_method: sigmoid
   model_path: models/churn_model.skops
 
 # These are starter project policy values, not business-approved release limits.

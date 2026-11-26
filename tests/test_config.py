@@ -29,7 +29,12 @@ def _valid_config() -> dict[str, object]:
     return {
         "project": {"name": "churn-test", "random_seed": 17},
         "data": {"raw_path": "data/churn.csv", "target_column": "Churn"},
-        "training": {"test_size": 0.25, "model_path": "models/model.skops"},
+        "training": {
+            "test_size": 0.25,
+            "threshold_beta": 2.0,
+            "calibration_method": "sigmoid",
+            "model_path": "models/model.skops",
+        },
         "quality_gates": {
             "min_cv_average_precision": 0.6,
             "min_holdout_average_precision": 0.55,
@@ -49,6 +54,8 @@ def test_load_config_validates_values_and_resolves_relative_paths(
     assert result.project_name == "churn-test"
     assert result.random_seed == 17
     assert result.training.test_size == 0.25
+    assert result.training.threshold_beta == 2.0
+    assert result.training.calibration_method == "sigmoid"
     assert result.quality_gates.min_cv_average_precision == 0.6
     assert result.log_level == "DEBUG"
     assert result.data.raw_path == config_root / "data" / "churn.csv"
@@ -89,6 +96,30 @@ def test_load_config_rejects_invalid_test_size(
     _write_config(config_root, yaml.safe_dump(values))
 
     with pytest.raises(ConfigurationError, match="training.test_size"):
+        config.load_config("configs/dev.yaml")
+
+
+@pytest.mark.parametrize("threshold_beta", [0, -1, True, float("nan"), "2"])
+def test_load_config_rejects_invalid_threshold_beta(
+    config_root: Path,
+    threshold_beta: object,
+) -> None:
+    values = _valid_config()
+    values["training"]["threshold_beta"] = threshold_beta  # type: ignore[index]
+    _write_config(config_root, yaml.safe_dump(values))
+
+    with pytest.raises(ConfigurationError, match="training.threshold_beta"):
+        config.load_config("configs/dev.yaml")
+
+
+def test_load_config_rejects_unsupported_calibration_method(
+    config_root: Path,
+) -> None:
+    values = _valid_config()
+    values["training"]["calibration_method"] = "unsupported"  # type: ignore[index]
+    _write_config(config_root, yaml.safe_dump(values))
+
+    with pytest.raises(ConfigurationError, match="training.calibration_method"):
         config.load_config("configs/dev.yaml")
 
 

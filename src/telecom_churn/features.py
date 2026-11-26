@@ -85,6 +85,66 @@ def split_features_target(
     return features, target.astype("int64")
 
 
+def add_service_count_features(features: pd.DataFrame) -> pd.DataFrame:
+    """Add compact counts of subscribed services without changing raw inputs.
+
+    These features are an experiment, not a guaranteed improvement. Missing
+    source values produce missing counts so the numeric imputer handles them.
+    """
+    support_columns = [
+        "OnlineSecurity",
+        "OnlineBackup",
+        "DeviceProtection",
+        "TechSupport",
+    ]
+    streaming_columns = ["StreamingTV", "StreamingMovies"]
+    all_service_columns = [
+        "PhoneService",
+        "MultipleLines",
+        "InternetService",
+        *support_columns,
+        *streaming_columns,
+    ]
+    missing = sorted(set(all_service_columns) - set(features.columns))
+    if missing:
+        raise DataValidationError(
+            f"Cannot derive service counts; required columns are missing: {missing}"
+        )
+
+    transformed = features.copy()
+    support_complete = transformed[support_columns].notna().all(axis=1)
+    streaming_complete = transformed[streaming_columns].notna().all(axis=1)
+    all_complete = transformed[all_service_columns].notna().all(axis=1)
+
+    transformed["support_service_count"] = transformed[support_columns].eq("Yes").sum(
+        axis=1
+    ).astype("float64").where(support_complete)
+    transformed["streaming_service_count"] = (
+        transformed[streaming_columns]
+        .eq("Yes")
+        .sum(axis=1)
+        .astype("float64")
+        .where(streaming_complete)
+    )
+
+    active_service_flags = pd.DataFrame(
+        {
+            "phone": transformed["PhoneService"].eq("Yes"),
+            "multiple_lines": transformed["MultipleLines"].eq("Yes"),
+            "internet": transformed["InternetService"].isin(["DSL", "Fiber optic"]),
+            **{
+                column: transformed[column].eq("Yes")
+                for column in (*support_columns, *streaming_columns)
+            },
+        },
+        index=transformed.index,
+    )
+    transformed["active_service_count"] = (
+        active_service_flags.sum(axis=1).astype("float64").where(all_complete)
+    )
+    return transformed
+
+
 def build_preprocessor() -> ColumnTransformer:
     """Create preprocessing that learns imputers, scaling, and encoding on fit."""
     numeric_pipeline = Pipeline(
